@@ -60,9 +60,9 @@
 
 
                                        /* ----------------------- EVENT FLAGS ------------------------ */
-#define OS_FLAG_EN                0    /* Enable (1) or Disable (0) code generation for EVENT FLAGS    */
+#define OS_FLAG_EN                1    /* Enable (1) or Disable (0) code generation for EVENT FLAGS    */
 #define OS_FLAG_WAIT_CLR_EN       0    /* Include code for Wait on Clear EVENT FLAGS                   */
-#define OS_FLAG_ACCEPT_EN         0    /*     Include code for OSFlagAccept()                          */
+#define OS_FLAG_ACCEPT_EN         1    /*     Include code for OSFlagAccept()                          */
 #define OS_FLAG_DEL_EN            0    /*     Include code for OSFlagDel()                             */
 #define OS_FLAG_NAME_SIZE        32    /*     Determine the size of the name of an event flag group    */
 #define OS_FLAG_QUERY_EN          0    /*     Include code for OSFlagQuery()                           */
