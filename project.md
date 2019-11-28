@@ -46,3 +46,8 @@
 - event flag 관련 설정 변경
   - OS_FLAG_EN : 1로 변경. event flag 사용을 위해서
   - OS_FLAG_ACCEPT_EN : 1로 변경. 스위치가 눌렸는지 체크할때 non-block 기능 사용을 위해서
+  - OS_MAX_FLAGS : 2로 변경
+
+## 추가되어야 할 사항
+
+- ClockSCount 전역변수 값이 여기 저기서 접근되는 것이 부당하다고 생각됨.

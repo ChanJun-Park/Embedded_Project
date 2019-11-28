@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "includes.h": "c",
-        "EX1.C": "cpp"
+        "EX1.C": "cpp",
+        "OS_TIME.C": "cpp"
     }
 }

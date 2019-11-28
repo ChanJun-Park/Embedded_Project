@@ -47,8 +47,8 @@ TARGET = lab2
 # (Note: 3 is not always the best optimization level. See avr-libc FAQ.)
 OPT = 2
 
-UCOSDIR = C:\ucos-II\project\source
-PORTDIR = C:\ucos-II\project\ports
+UCOSDIR = C:/ucos-II/project/source
+PORTDIR = C:/ucos-II/project/ports
 
 INCDIR1	= $(UCOSDIR)
 INCDIR2	= $(PORTDIR)
@@ -167,7 +167,7 @@ AVRDUDE_FLAGS = -p $(MCU) -P $(AVRDUDE_PORT) -c $(AVRDUDE_PROGRAMMER)
 # ---------------------------------------------------------------------------
 
 # Define directories, if needed.
-DIRAVR = C:\WinAVR-20100110
+DIRAVR = C:/WinAVR-20100110
 DIRAVRBIN = $(DIRAVR)/bin
 DIRAVRUTILS = $(DIRAVR)/utils/bin
 DIRINC = .
