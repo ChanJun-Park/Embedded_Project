@@ -16,6 +16,7 @@
 #define OFF 0
 
 /* timer2 32 prescaling 음계 */
+#define MUT 0
 #define DO 17
 #define RE 43
 #define MI 66
@@ -24,14 +25,22 @@
 #define LA 114
 #define TI 129
 #define UDO 137
+#define URE	150
+#define UMI 162
+#define UFA 167
 
 /* 멜로디 박자 관련 상수 */
-#define QUVR 125
-#define QUTR 250
-#define HALF 500
-#define ONE 1000
-#define TWO 2000
-#define FOUR 4000
+#define REST 2
+#define QUVR 7
+#define QUTR 15
+#define HALF 30
+#define ONE 60
+#define ONE_HALF 90
+#define TWO 120
+#define THREE 180
+#define FOUR 240
+
+#define MELODY_LEN	61
 
 #define CLOCK_DISPLAY 	0
 #define CLOCK_HH_EDIT 	1
@@ -55,16 +64,32 @@ volatile INT8U state = OFF;
 volatile INT8U mel_idx = 0;
 volatile INT8U note_idx = 0;
 
-/* my face like apple */
-const uc melody[] = {DO, RE, MI, MI, FA, MI, RE, 
-                     RE, MI, FA, FA, SOL, FA, MI, 
-					 MI, FA, SOL, SOL, UDO, LA, SOL, SOL, 
-					 DO, RE, MI, MI, RE, DO};
+/* Silent Night, Holy Night */
+const uc melody[] = {SOL, LA, SOL, MI, MUT,
+					 SOL, LA, SOL, MI, MUT,
+					 URE, URE, TI, MUT,
+					 UDO, UDO, SOL, MUT,
+					 LA, LA, UDO, TI, LA, MUT,
+					 SOL, LA, SOL, MI, MUT,
+					 LA, LA, UDO, TI, LA, MUT,
+					 SOL, LA, SOL, MI, MUT,
+					 URE, URE, UFA, URE, TI, MUT,
+					 UDO, UMI, MUT, MUT,
+					 UDO, SOL, MI, SOL, FA, RE, MUT,
+					 DO, DO, MUT, MUT};
 
-const INT16U note[] = {HALF, HALF, ONE, ONE, HALF, HALF, TWO,
-					HALF, HALF, ONE, ONE, HALF, HALF, TWO,
-					HALF, HALF, ONE, ONE, HALF, HALF, ONE, ONE,
-					HALF, HALF, ONE, ONE, ONE, TWO};
+const INT16U note[] = {ONE_HALF, HALF, ONE, THREE, REST,
+					   ONE_HALF, HALF, ONE, THREE, REST,
+					   TWO, ONE, THREE, REST,
+					   TWO, ONE, THREE, REST,
+					   TWO, ONE, ONE_HALF, HALF, ONE, REST,
+					   ONE_HALF, HALF, ONE, THREE, REST,
+					   TWO, ONE, ONE_HALF, HALF, ONE, REST,
+					   ONE_HALF, HALF, ONE, THREE, REST,
+					   TWO, ONE, ONE_HALF, HALF, ONE, REST,
+					   THREE, TWO, ONE, REST,
+					   ONE, ONE, ONE, ONE_HALF, HALF, ONE, REST,
+					   THREE, TWO, ONE, REST};
 
 OS_STK        TaskStk[N_TASKS][TASK_STK_SIZE];
 OS_EVENT	  *Sem;			    // 크리티컬 섹션 보호용 세마포어
@@ -82,7 +107,6 @@ volatile uc 	 ClockFnd[4];	// 현재 시간 (HH:MM)
 
 volatile INT16U  TimerSCount;	// 타이머 카운트 변수
 volatile uc 	 TimerFnd[4];	// 현재 타이머 시간 (MM:SS)
-volatile BOOLEAN TimesUp;
 
 void ControlTask(void *data);  	// 전체 테스크 실행 순서 관리 테스크
 void ClockTask(void *data);	   	// 시계 모드 관리 테스크
@@ -124,6 +148,22 @@ ISR(INT5_vect) {
 		calculate_hh_mm(ClockSCount);
 		Sw2 = FALSE;
 	}
+	else if (Mode == TIMER_MM_EDIT) {
+		TimerSCount = (TimerSCount + 60) % 6000;
+		calculate_mm_ss(TimerSCount);
+		Sw2 = FALSE;
+	}
+	else if (Mode == TIMER_SS_EDIT) {
+		INT16U temp_minute = TimerSCount / 60;
+		TimerSCount = (TimerSCount + 1) % 6000;
+
+		// 시간 단위 변경으로 인해 분 단위가 변경되는 것 방지
+		if (temp_minute != TimerSCount / 60) {
+			TimerSCount = temp_minute * 60;
+		}
+		calculate_mm_ss(TimerSCount);
+		Sw2 = FALSE;
+	}
 	OSFlagPost(SwitchFlag, 0x02, OS_FLAG_SET, &err);
 	_delay_ms(10);  // debouncing
 }
@@ -131,20 +171,26 @@ ISR(INT5_vect) {
 // Timer2 음계 출력
 ISR (TIMER2_OVF_vect) {
 	if (Mode == TIMER_ALARM) {
-		if (state == ON) {
+		if (melody[mel_idx] == MUT) {
 			PORTB = 0x00;
-			state = OFF;
 		}
 		else {
-			PORTB = 0x10;
-			state = ON;
+			if (state == ON) {
+				PORTB = 0x00;
+				state = OFF;
+			}
+			else {
+				PORTB = 0x10;
+				state = ON;
+			}
 		}
+		
+    	TCNT2 = melody[mel_idx];
 	}
     else {
 		state = OFF;
 		PORTB = 0x00;
 	}
-    TCNT2 = melody[mel_idx];
 }
 
 // Timer1. 1초씩 증가
@@ -168,7 +214,6 @@ int main (void)
 	ClockSCount = 86340;	// 23시 59분
 	Mode = CLOCK_DISPLAY;
 	TimerSCount = 0;
-	TimesUp = FALSE;
 
 	// 시간을 계산하기 위해 타이머 1를 적절히 설정
 	OS_ENTER_CRITICAL();
@@ -180,15 +225,15 @@ int main (void)
 	// 버저를 이용하기 위해 타이머 2를 적절히 설정
 	TCCR2 = ((0 << CS22) | (1 << CS21) | (1 << CS20));	// timer2 clock 32 prescaling
 
+	// buzzer
+	DDRB = 0x10;
+
 	// fnd 설정
 	DDRC = 0xff;
     DDRG = 0x0f;
 
 	// 디버그용 led
 	DDRA = 0xff;
-
-	// buzzer
-	DDRB = 0x10;
 
     // 스위치 설정
     DDRE = 0xcf;        // 0b1100 1111
@@ -274,15 +319,17 @@ void TimerAlarmTask(void *data)
 
 	for(;;) {
 		OSSemPend(TimerSem, 0, &err);
+		note_idx = 0;
+		mel_idx = 0;
 		TIMSK |= (1 << TOIE2);	// timer2 overflow interrupt enabled
 		while(Mode == TIMER_ALARM) {
 			TCNT2 = melody[mel_idx];
 
-			while(1) {
+			while(Mode == TIMER_ALARM) {
 				OSTimeDly(note[note_idx]);
 				// _delay_ms(note[note_idx]);
-				note_idx = (note_idx + 1) % 28;
-				mel_idx = (mel_idx + 1) % 28;
+				note_idx = (note_idx + 1) % MELODY_LEN;
+				mel_idx = (mel_idx + 1) % MELODY_LEN;
 			}
 		}
 		TIMSK &= ~(1 << TOIE2);	// timer2 overflow interrupt disabled
@@ -293,12 +340,13 @@ void TimerTask (void * data)
 {
 	INT8U err;
 	INT8U i;
+	volatile BOOLEAN TimesUp = FALSE;
 
 	for(;;) {
 		OSFlagPend(TaskControlFlag, 0x02, OS_FLAG_WAIT_SET_ALL, 0, &err); // no consume
 		
 		calculate_mm_ss(TimerSCount);
-		if (Mode == TIMER_STOP) {
+		if (Mode == TIMER_STOP || Mode == TIMER_ALARM) {
 			if (TimesUp == TRUE) {
 				TimesUp = FALSE;
 				Mode = TIMER_ALARM;
@@ -321,10 +369,12 @@ void TimerTask (void * data)
 				display_fnd(TimerFnd);
 			}
 
-			TimerSCount -= 1;
 			if (TimerSCount == 0) {
-				Mode == TIMER_STOP;
+				Mode = TIMER_STOP;
 				TimesUp = TRUE;
+			}
+			else {
+				TimerSCount -= 1;
 			}
 		}
 		else { // if (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT)
@@ -418,25 +468,33 @@ void change_mode() {
 		}
 		else if (Mode == TIMER_ALARM) {
 			Mode = TIMER_STOP;
-			Sw1 = False;
+			Sw1 = FALSE;
 		}
 		return;
 	}
 	if (Sw2 == TRUE) {
 		if (Mode == CLOCK_DISPLAY) {
+			PORTA = 0x80;
 			Mode = TIMER_STOP;
 			Sw2 = FALSE;
 		}
 		else if (Mode == TIMER_STOP) {
+			PORTA = 0x40;
 			Mode = TEMP_DISPLAY;
 			Sw2 = FALSE;
 		}
 		else if (Mode == TEMP_DISPLAY) {
+			PORTA = 0x20;
 			Mode = LIGHT_DISPLAY;
 			Sw2 = FALSE;
 		}
 		else if (Mode == LIGHT_DISPLAY) {
+			PORTA = 0x10;
 			Mode = CLOCK_DISPLAY;
+			Sw2 = FALSE;
+		}
+		else if (Mode == TIMER_ALARM) {
+			Mode = TIMER_STOP;
 			Sw2 = FALSE;
 		}
 		// *
@@ -452,8 +510,9 @@ void switch_task() {
 	if (Mode == CLOCK_DISPLAY || Mode == CLOCK_HH_EDIT || Mode == CLOCK_MM_EDIT) {
 		OSFlagPost(TaskControlFlag, 0x01, OS_FLAG_SET, &err);
 	}
-	else if (Mode == TIMER_DISPLAY || Mode == TIMER_HH_EDIT || 
+	else if (Mode == TIMER_STOP || Mode == TIMER_SS_EDIT || Mode == TIMER_ALARM ||
 			 Mode == TIMER_MM_EDIT || Mode == TIMER_ALARM) {
+		OSFlagPost(TaskControlFlag, 0x01, OS_FLAG_CLR, &err);
 		OSFlagPost(TaskControlFlag, 0x02, OS_FLAG_SET, &err);
 	}
 	else if (Mode == TEMP_DISPLAY) {

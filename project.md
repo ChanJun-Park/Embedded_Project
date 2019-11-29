@@ -51,3 +51,18 @@
 ## 추가되어야 할 사항
 
 - ClockSCount 전역변수 값이 여기 저기서 접근되는 것이 부당하다고 생각됨.
+
+## 비고
+
+```c
+/* my face like apple */
+const uc melody[] = {DO, RE, MI, MI, FA, MI, RE, MUT,
+                     RE, MI, FA, FA, SOL, FA, MI, MUT,
+					 MI, FA, SOL, SOL, UDO, LA, SOL, SOL, MUT,
+					 DO, RE, MI, MI, RE, DO, MUT};
+
+const INT16U note[] = {HALF, HALF, ONE, ONE, HALF, HALF, TWO, REST,
+					HALF, HALF, ONE, ONE, HALF, HALF, TWO, REST,
+					HALF, HALF, ONE, ONE, HALF, HALF, ONE, ONE, REST,
+					HALF, HALF, ONE, ONE, ONE, TWO, REST};
+```
