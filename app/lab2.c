@@ -4,14 +4,13 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>	// interrupt 관련
 #include <util/delay.h>
-
 #define  TASK_STK_SIZE  OS_TASK_DEF_STK_SIZE
 #define  N_TASKS        4	// *
 
 /* timer1 1024 prescaling의 경우 초 단위 clock 개수*/
-#define ONE_SEC -15625
+#define ONE_SEC -15626
 
-/* Buzzer on/off */
+/* Buzzer on,off */
 #define ON 1
 #define OFF 0
 
@@ -29,7 +28,7 @@
 #define UMI 162
 #define UFA 167
 
-/* 멜로디 박자 관련 상수 */
+/* 박자 관련 상수 */
 #define REST 2
 #define QUVR 7
 #define QUTR 15
@@ -42,6 +41,7 @@
 
 #define MELODY_LEN	61
 
+/* 전체 상태 관리 상수 */
 #define CLOCK_DISPLAY 	0
 #define CLOCK_HH_EDIT 	1
 #define CLOCK_MM_EDIT 	2
@@ -50,10 +50,11 @@
 #define TIMER_MM_EDIT 	4
 #define TIMER_SS_EDIT 	5
 #define TIMER_COUNT		6
-#define TIMER_ALARM		7
+#define TIMER_PAUSE		7
+#define TIMER_ALARM		8
 
-#define TEMP_DISPLAY	8
-#define LIGHT_DISPLAY 	9
+#define TEMP_DISPLAY	9
+#define LIGHT_DISPLAY 	10
 
 typedef unsigned char uc;
 const uc digit[10] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x27, 0x7f, 0x6f};
@@ -64,7 +65,7 @@ volatile INT8U state = OFF;
 volatile INT8U mel_idx = 0;
 volatile INT8U note_idx = 0;
 
-/* Silent Night, Holy Night */
+/* Silent Night, Holy Night melody */
 const uc melody[] = {SOL, LA, SOL, MI, MUT,
 					 SOL, LA, SOL, MI, MUT,
 					 URE, URE, TI, MUT,
@@ -78,6 +79,7 @@ const uc melody[] = {SOL, LA, SOL, MI, MUT,
 					 UDO, SOL, MI, SOL, FA, RE, MUT,
 					 DO, DO, MUT, MUT};
 
+/* Silent Night, Holy Night beat */
 const INT16U note[] = {ONE_HALF, HALF, ONE, THREE, REST,
 					   ONE_HALF, HALF, ONE, THREE, REST,
 					   TWO, ONE, THREE, REST,
@@ -92,10 +94,10 @@ const INT16U note[] = {ONE_HALF, HALF, ONE, THREE, REST,
 					   THREE, TWO, ONE, REST};
 
 OS_STK        TaskStk[N_TASKS][TASK_STK_SIZE];
-OS_EVENT	  *Sem;			    // 크리티컬 섹션 보호용 세마포어
-OS_EVENT 	  *TimerSem;		// 타이머 테스크 동기화용 세마포어
-OS_FLAG_GRP   *SwitchFlag;		// ControlTask 동기화 이벤트 플래그
-OS_FLAG_GRP   *TaskControlFlag;	// ControlTask가 나머지 테스크를 동기화 하기위한 이벤트 플래그
+OS_EVENT	  *Sem;			    		// 크리티컬 섹션 보호용 세마포어
+OS_EVENT 	  *TimerSem;				// 타이머 테스크 동기화용 세마포어
+OS_EVENT      *SwitchToControlSem;		// ControlTask 동기화용 세마포어
+OS_FLAG_GRP   *TaskControlFlag;			// ControlTask가 나머지 테스크를 동기화 하기위한 이벤트 플래그
 
 volatile INT8U  	Mode;		// 전체 동작 모드 관리 전역변수
 volatile BOOLEAN 	Sw1;		// 스위치1 눌림 체크 전역 변수
@@ -113,18 +115,20 @@ void ClockTask(void *data);	   	// 시계 모드 관리 테스크
 void TimerAlarmTask(void *data);// 타이머 알람 출력 테스크
 void TimerTask(void *data);    	// 타이머 모드 관리 테스크
 
+void initialize(void);
+void clock_edit(void);
+void timer_edit(void);
 void calculate_hh_mm(INT32U scount);
 void calculate_mm_ss(INT16U scount);
 void display_fnd(uc * fnd);
 void change_mode(void);
 void switch_task(void);
 
-
 /* 인터럽트 핸들러 정의 */
 // Sw1
 ISR(INT4_vect) {
 	Sw1 = TRUE;
-	OSFlagPost(SwitchFlag, 0x01, OS_FLAG_SET, &err);
+	OSSemPost(SwitchToControlSem);
 	_delay_ms(10);  // debouncing
 }
 
@@ -132,39 +136,15 @@ ISR(INT4_vect) {
 ISR(INT5_vect) {
 	INT8U i;
 	Sw2 = TRUE;
-	if (Mode == CLOCK_HH_EDIT) {
-		ClockSCount = (ClockSCount + 3600) % 86400;
-		calculate_hh_mm(ClockSCount);
+	if (Mode == CLOCK_HH_EDIT || Mode == CLOCK_MM_EDIT) {
+		clock_edit();
 		Sw2 = FALSE;
 	}
-	else if (Mode == CLOCK_MM_EDIT) {
-		INT32U temp_hour = ClockSCount / 3600; 
-		ClockSCount = (ClockSCount + 60) % 86400;
-
-		// 분 단위 변경으로 인해 시간 단위가 변경되는 것 방지
-		if (temp_hour != ClockSCount / 3600) {
-			ClockSCount = temp_hour * 3600;
-		}
-		calculate_hh_mm(ClockSCount);
+	else if (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT) {
+		timer_edit();
 		Sw2 = FALSE;
 	}
-	else if (Mode == TIMER_MM_EDIT) {
-		TimerSCount = (TimerSCount + 60) % 6000;
-		calculate_mm_ss(TimerSCount);
-		Sw2 = FALSE;
-	}
-	else if (Mode == TIMER_SS_EDIT) {
-		INT16U temp_minute = TimerSCount / 60;
-		TimerSCount = (TimerSCount + 1) % 6000;
-
-		// 시간 단위 변경으로 인해 분 단위가 변경되는 것 방지
-		if (temp_minute != TimerSCount / 60) {
-			TimerSCount = temp_minute * 60;
-		}
-		calculate_mm_ss(TimerSCount);
-		Sw2 = FALSE;
-	}
-	OSFlagPost(SwitchFlag, 0x02, OS_FLAG_SET, &err);
+	OSSemPost(SwitchToControlSem);
 	_delay_ms(10);  // debouncing
 }
 
@@ -184,7 +164,6 @@ ISR (TIMER2_OVF_vect) {
 				state = ON;
 			}
 		}
-		
     	TCNT2 = melody[mel_idx];
 	}
     else {
@@ -193,7 +172,7 @@ ISR (TIMER2_OVF_vect) {
 	}
 }
 
-// Timer1. 1초씩 증가
+// Timer1 1초마다 실행
 ISR(TIMER1_OVF_vect) {
 	TCNT1 = ONE_SEC;
 	ClockSCount = (ClockSCount + 1) % 86400;
@@ -203,47 +182,7 @@ int main (void)
 {
 	OSInit();
 
-	// OSTimeDly 쓰기 위해 타이머 0를 적절히 설정
-	OS_ENTER_CRITICAL();
-	TCCR0 = 0x07;
-	TIMSK = _BV(TOIE0);
-	TCNT0 = 256 - (CPU_CLOCK_HZ / OS_TICKS_PER_SEC / 1024);
-	OS_EXIT_CRITICAL();
-
-	// 초기 셋팅
-	ClockSCount = 86340;	// 23시 59분
-	Mode = CLOCK_DISPLAY;
-	TimerSCount = 0;
-
-	// 시간을 계산하기 위해 타이머 1를 적절히 설정
-	OS_ENTER_CRITICAL();
-	TCCR1B = ((1 << CS12) | (0 << CS11) | (1 << CS10)); // timer1 1024 prescaling
-	TIMSK |= (1 << TOIE1);	// timer1 overflow interrupt enabled
-	TCNT1 = ONE;
-	OS_EXIT_CRITICAL();
-	
-	// 버저를 이용하기 위해 타이머 2를 적절히 설정
-	TCCR2 = ((0 << CS22) | (1 << CS21) | (1 << CS20));	// timer2 clock 32 prescaling
-
-	// buzzer
-	DDRB = 0x10;
-
-	// fnd 설정
-	DDRC = 0xff;
-    DDRG = 0x0f;
-
-	// 디버그용 led
-	DDRA = 0xff;
-
-    // 스위치 설정
-    DDRE = 0xcf;        // 0b1100 1111
-    EICRB = 0x0a;       // 0b0000 1010, falling edge triger
-    EIMSK = 0x30;       // 0b0011 0000,
-
-	Sem = OSSemCreate(1);
-	TimerSem = OSSemCreate(1);
-	SwitchFlag = OSFlagCreate(0x00, &err);
-	TaskControlFlag = OSFlagCreate(0x01, &err);		// CLOCK_DISPLAY 모드로 시작
+	initialize();
 
 	OSTaskCreate(ControlTask, (void *)0, (void *)&TaskStk[0][TASK_STK_SIZE - 1], 0);
 	OSTaskCreate(ClockTask, (void *)0, (void *)&TaskStk[1][TASK_STK_SIZE - 1], 1);
@@ -266,7 +205,7 @@ void ControlTask (void *data)
 
 		// 스위치 눌림 체크
 		// 여기서 blocking 되어 다른 Task에게 실행 양도
-		OSFlagPend(SwitchFlag, 0x03, OS_FLAG_WAIT_SET_ANY + OS_FLAG_CONSUME, 0, &err);
+		OSSemPend(SwitchToControlSem, 0, &err);
 
 		// 눌린 스위치에 따른 Mode 값 변경
 		OSSemPend(Sem, 0, &err);
@@ -326,8 +265,7 @@ void TimerAlarmTask(void *data)
 			TCNT2 = melody[mel_idx];
 
 			while(Mode == TIMER_ALARM) {
-				OSTimeDly(note[note_idx]);
-				// _delay_ms(note[note_idx]);
+				OSTimeDly(note[note_idx]);	// FND 출력과 음계 출력을 위한 양도
 				note_idx = (note_idx + 1) % MELODY_LEN;
 				mel_idx = (mel_idx + 1) % MELODY_LEN;
 			}
@@ -346,7 +284,7 @@ void TimerTask (void * data)
 		OSFlagPend(TaskControlFlag, 0x02, OS_FLAG_WAIT_SET_ALL, 0, &err); // no consume
 		
 		calculate_mm_ss(TimerSCount);
-		if (Mode == TIMER_STOP || Mode == TIMER_ALARM) {
+		if (Mode == TIMER_STOP || Mode == TIMER_PAUSE || Mode == TIMER_ALARM) {
 			if (TimesUp == TRUE) {
 				TimesUp = FALSE;
 				Mode = TIMER_ALARM;
@@ -378,10 +316,6 @@ void TimerTask (void * data)
 			}
 		}
 		else { // if (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT)
-			TimerFnd[2] += dot;
-			for (i = 0; i < 50; i++) {
-				display_fnd(TimerFnd);
-			}
 			TimerFnd[2] -= dot;
 			if (Mode == TIMER_MM_EDIT) {
 				TimerFnd[3] = 0;
@@ -395,6 +329,12 @@ void TimerTask (void * data)
 			for (i = 0; i < 50; i++) {
 				display_fnd(TimerFnd);
 			}
+			
+			calculate_mm_ss(TimerSCount);
+			TimerFnd[2] += dot;
+			for (i = 0; i < 50; i++) {
+				display_fnd(TimerFnd);
+			}
 		}
 	}
 }
@@ -402,6 +342,82 @@ void TimerTask (void * data)
 /************************************ Task 정의 끝 **************************************/
 
 /************************************ 사용 함수 정의 ************************************/
+
+void initialize(void) {
+	// OSTimeDly 쓰기 위해 타이머 0를 적절히 설정
+	OS_ENTER_CRITICAL();
+	TCCR0 = 0x07;
+	TIMSK = _BV(TOIE0);
+	TCNT0 = 256 - (CPU_CLOCK_HZ / OS_TICKS_PER_SEC / 1024);
+	OS_EXIT_CRITICAL();
+
+	// 초기 셋팅
+	ClockSCount = 86340;	// 23시 59분
+	Mode = CLOCK_DISPLAY;
+	TimerSCount = 0;
+
+	// 시간을 계산하기 위해 타이머 1를 적절히 설정
+	OS_ENTER_CRITICAL();
+	TCCR1B = ((1 << CS12) | (0 << CS11) | (1 << CS10)); // timer1 1024 prescaling
+	TIMSK |= (1 << TOIE1);	// timer1 overflow interrupt enabled
+	TCNT1 = ONE;
+	OS_EXIT_CRITICAL();
+	
+	// 음계를 출력하기 위해 타이머 2를 적절히 설정
+	TCCR2 = ((0 << CS22) | (1 << CS21) | (1 << CS20));	// timer2 clock 32 prescaling
+
+	// buzzer
+	DDRB = 0x10;
+
+	// fnd 설정
+	DDRC = 0xff;
+    DDRG = 0x0f;
+
+	// 디버그용 led
+	DDRA = 0xff;
+
+    // 스위치 설정
+    DDRE = 0xcf;        // 0b1100 1111
+    EICRB = 0x0a;       // 0b0000 1010, falling edge triger
+    EIMSK = 0x30;       // 0b0011 0000,
+
+	Sem = OSSemCreate(1);
+	TimerSem = OSSemCreate(0);
+	SwitchToControlSem = OSSemCreate(0);
+	TaskControlFlag = OSFlagCreate(0x01, &err);		// CLOCK_DISPLAY 모드로 시작
+}
+
+void clock_edit(void) {
+	if (Mode == CLOCK_HH_EDIT) {
+		ClockSCount = (ClockSCount + 3600) % 86400;
+	}
+	else if (Mode == CLOCK_MM_EDIT) {
+		INT32U temp_hour = ClockSCount / 3600; 
+		ClockSCount = (ClockSCount + 60) % 86400;
+
+		// 분 단위 변경으로 인해 시간 단위가 변경되는 것 방지
+		if (temp_hour != ClockSCount / 3600) {
+			ClockSCount = temp_hour * 3600;
+		}
+	}
+	calculate_hh_mm(ClockSCount);
+}
+
+void timer_edit(void) {
+	if (Mode == TIMER_MM_EDIT) {
+		TimerSCount = (TimerSCount + 60) % 6000;
+	}
+	else if (Mode == TIMER_SS_EDIT) {
+		INT16U temp_minute = TimerSCount / 60;
+		TimerSCount = (TimerSCount + 1) % 6000;
+
+		// 시간 단위 변경으로 인해 분 단위가 변경되는 것 방지
+		if (temp_minute != TimerSCount / 60) {
+			TimerSCount = temp_minute * 60;
+		}
+	}
+	calculate_mm_ss(TimerSCount);
+}
 
 void calculate_hh_mm(INT32U scount) {
 	INT8U hh, mm;
@@ -466,6 +482,14 @@ void change_mode() {
 			Mode = TIMER_COUNT;
 			Sw1 = FALSE;
 		}
+		else if (Mode == TIMER_COUNT) {
+			Mode = TIMER_PAUSE;
+			Sw1 = FALSE;
+		}
+		else if (Mode == TIMER_PAUSE) {
+			Mode = TIMER_COUNT;
+			Sw1 = FALSE;
+		}
 		else if (Mode == TIMER_ALARM) {
 			Mode = TIMER_STOP;
 			Sw1 = FALSE;
@@ -476,6 +500,12 @@ void change_mode() {
 		if (Mode == CLOCK_DISPLAY) {
 			PORTA = 0x80;
 			Mode = TIMER_STOP;
+			Sw2 = FALSE;
+		}
+		else if (Mode == TIMER_PAUSE) {
+			PORTA = 0x88;
+			Mode = TIMER_STOP;
+			TimerSCount = 0;
 			Sw2 = FALSE;
 		}
 		else if (Mode == TIMER_STOP) {
@@ -511,14 +541,16 @@ void switch_task() {
 		OSFlagPost(TaskControlFlag, 0x01, OS_FLAG_SET, &err);
 	}
 	else if (Mode == TIMER_STOP || Mode == TIMER_SS_EDIT || Mode == TIMER_ALARM ||
-			 Mode == TIMER_MM_EDIT || Mode == TIMER_ALARM) {
+			 Mode == TIMER_MM_EDIT || Mode == TIMER_ALARM || Mode == TIMER_PAUSE) {
 		OSFlagPost(TaskControlFlag, 0x01, OS_FLAG_CLR, &err);
 		OSFlagPost(TaskControlFlag, 0x02, OS_FLAG_SET, &err);
 	}
 	else if (Mode == TEMP_DISPLAY) {
-
+		OSFlagPost(TaskControlFlag, 0x02, OS_FLAG_CLR, &err);
+		OSFlagPost(TaskControlFlag, 0x04, OS_FLAG_SET, &err);
 	}
 	else if (Mode == LIGHT_DISPLAY) {
-
+		OSFlagPost(TaskControlFlag, 0x04, OS_FLAG_CLR, &err);
+		OSFlagPost(TaskControlFlag, 0x08, OS_FLAG_SET, &err);
 	}
 }
