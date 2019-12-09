@@ -5,7 +5,7 @@
 #include <avr/interrupt.h>	// interrupt 관련
 #include <util/delay.h>
 #define  TASK_STK_SIZE  OS_TASK_DEF_STK_SIZE
-#define  N_TASKS        4	// *
+#define  N_TASKS        7	// *
 
 /* timer1 1024 prescaling의 경우 초 단위 clock 개수*/
 #define ONE_SEC -15626
@@ -41,6 +41,13 @@
 
 #define MELODY_LEN	61
 
+/* 온도관련 상수 */
+#define UCHAR unsigned char
+#define USHORT unsigned short
+#define ATS75_ADDR 0x98
+#define ATS75_TEMP_REG 0
+#define ATS75_CONFIG_REG 1
+
 /* 전체 상태 관리 상수 */
 #define CLOCK_DISPLAY 	0
 #define CLOCK_HH_EDIT 	1
@@ -54,7 +61,7 @@
 #define TIMER_ALARM		8
 
 #define TEMP_DISPLAY	9
-#define LIGHT_DISPLAY 	10
+#define LIGHT_DISPLAY 	11
 
 typedef unsigned char uc;
 const uc digit[10] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x27, 0x7f, 0x6f};
@@ -98,6 +105,7 @@ OS_EVENT	  *Sem;			    		// 크리티컬 섹션 보호용 세마포어
 OS_EVENT 	  *TimerSem;				// 타이머 테스크 동기화용 세마포어
 OS_EVENT      *SwitchToControlSem;		// ControlTask 동기화용 세마포어
 OS_FLAG_GRP   *TaskControlFlag;			// ControlTask가 나머지 테스크를 동기화 하기위한 이벤트 플래그
+OS_EVENT 	  *TempMbox;				// 온도값을 저장하는 메일박스
 
 volatile INT8U  	Mode;		// 전체 동작 모드 관리 전역변수
 volatile BOOLEAN 	Sw1;		// 스위치1 눌림 체크 전역 변수
@@ -114,6 +122,9 @@ void ControlTask(void *data);  	// 전체 테스크 실행 순서 관리 테스�
 void ClockTask(void *data);	   	// 시계 모드 관리 테스크
 void TimerAlarmTask(void *data);// 타이머 알람 출력 테스크
 void TimerTask(void *data);    	// 타이머 모드 관리 테스크
+void TemperatureTask (void *data);			// 온도 관련 테스크
+void TemperatureDisplayTask (void *data);	// 온도 출력 관련 테스크
+void LightTask(void *data);		// 조명도 관련 테스크
 
 void initialize(void);
 void clock_edit(void);
@@ -124,17 +135,31 @@ void display_fnd(uc * fnd);
 void change_mode(void);
 void switch_task(void);
 
+/* 조명도 관련 함수 */
+unsigned short read_adc();
+void show_adc(unsigned short value);
+
+/* 온도 관련 함수 */
+void write_twi_1byte_nopreset(UCHAR reg, UCHAR data);
+void write_twi_0byte_nopreset(UCHAR reg);
+int ReadTemperature(void);
+
 /* 인터럽트 핸들러 정의 */
 // Sw1
 ISR(INT4_vect) {
+	_delay_ms(50);  // debouncing
+	if (PINE == 0x10) return;
+
 	Sw1 = TRUE;
 	OSSemPost(SwitchToControlSem);
-	_delay_ms(10);  // debouncing
 }
 
 // Sw2
 ISR(INT5_vect) {
 	INT8U i;
+	_delay_ms(50);  // debouncing
+	if (PINE == 0x20) return;
+
 	Sw2 = TRUE;
 	if (Mode == CLOCK_HH_EDIT || Mode == CLOCK_MM_EDIT) {
 		clock_edit();
@@ -145,7 +170,6 @@ ISR(INT5_vect) {
 		Sw2 = FALSE;
 	}
 	OSSemPost(SwitchToControlSem);
-	_delay_ms(10);  // debouncing
 }
 
 // Timer2 음계 출력
@@ -186,8 +210,14 @@ int main (void)
 
 	OSTaskCreate(ControlTask, (void *)0, (void *)&TaskStk[0][TASK_STK_SIZE - 1], 0);
 	OSTaskCreate(ClockTask, (void *)0, (void *)&TaskStk[1][TASK_STK_SIZE - 1], 1);
+
 	OSTaskCreate(TimerAlarmTask, (void*)0, (void *)&TaskStk[2][TASK_STK_SIZE - 1], 2);
 	OSTaskCreate(TimerTask, (void*)0, (void *)&TaskStk[3][TASK_STK_SIZE - 1], 3);
+
+	OSTaskCreate(TemperatureTask, (void*)0, (void *)&TaskStk[4][TASK_STK_SIZE - 1], 4);
+	OSTaskCreate(TemperatureDisplayTask, (void*)0, (void *)&TaskStk[5][TASK_STK_SIZE - 1], 5);
+
+	OSTaskCreate(LightTask, (void*)0, (void *)&TaskStk[6][TASK_STK_SIZE - 1], 6);
 
     sei();		// 전체 인터럽트 허용
 	OSStart();
@@ -228,6 +258,8 @@ void ClockTask (void *data)
 	for (;;) {
 		OSFlagPend(TaskControlFlag, 0x01, OS_FLAG_WAIT_SET_ALL, 0, &err); // no consume
 		calculate_hh_mm(ClockSCount);
+
+		PORTA = 0x80;
 
 		// 현재 시간 출력
 		// 깜빡거리는 효과를 위해서 0.5초는 정상출력, 0.5초는 FND의 특정 세그먼트를 제외하고 출력
@@ -282,8 +314,10 @@ void TimerTask (void * data)
 
 	for(;;) {
 		OSFlagPend(TaskControlFlag, 0x02, OS_FLAG_WAIT_SET_ALL, 0, &err); // no consume
-		
 		calculate_mm_ss(TimerSCount);
+
+		PORTA = 0x40;
+
 		if (Mode == TIMER_STOP || Mode == TIMER_PAUSE || Mode == TIMER_ALARM) {
 			if (TimesUp == TRUE) {
 				TimesUp = FALSE;
@@ -307,12 +341,10 @@ void TimerTask (void * data)
 				display_fnd(TimerFnd);
 			}
 
-			if (TimerSCount == 0) {
+			TimerSCount -= 1;
+			if (TimerSCount <= 0) {
 				Mode = TIMER_STOP;
 				TimesUp = TRUE;
-			}
-			else {
-				TimerSCount -= 1;
 			}
 		}
 		else { // if (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT)
@@ -339,6 +371,68 @@ void TimerTask (void * data)
 	}
 }
 
+void TemperatureTask (void *data)
+{
+	int	value;
+	INT8U err;
+
+	data = data;
+
+	write_twi_1byte_nopreset(ATS75_CONFIG_REG, 0x00);
+	write_twi_0byte_nopreset(ATS75_TEMP_REG);
+	while (1)  {
+		OSFlagPend(TaskControlFlag, 0x04, OS_FLAG_WAIT_SET_ALL, 0 ,&err);  // no consume;
+		PORTA = 0x20;
+
+		OS_ENTER_CRITICAL();
+		value = ReadTemperature();
+		OS_EXIT_CRITICAL();
+
+		OS_ENTER_CRITICAL();
+		OSMboxPost(TempMbox, (void*)& value);
+		OS_EXIT_CRITICAL();
+
+		OSTimeDly(100);
+	}
+}
+
+void TemperatureDisplayTask (void *data)
+{
+	INT8U value;
+	INT8U err;
+
+	void *temp;
+    data = data;
+
+	for(;;) {
+		OSFlagPend(TaskControlFlag, 0x04, OS_FLAG_WAIT_SET_ALL, 0 ,&err);  // no consume;
+		temp = OSMboxAccept(TempMbox);
+		if (temp != (void*)0) {
+			value = *(INT8U*)temp;
+		}
+
+		PORTC = digit[value % 10];
+		PORTG = 0x01;
+		_delay_ms(2);
+		PORTC = digit[value / 10];
+		PORTG = 0x02;
+		_delay_ms(2);
+	}
+}
+
+void LightTask(void *data)
+{
+	INT8U err;
+	unsigned short value;
+
+    while(1)
+    {
+		OSFlagPend(TaskControlFlag, 0x08, OS_FLAG_WAIT_SET_ALL, 0 ,&err);  // no consume;
+        value = read_adc();
+        show_adc(value);
+    }
+}
+
 /************************************ Task 정의 끝 **************************************/
 
 /************************************ 사용 함수 정의 ************************************/
@@ -360,7 +454,7 @@ void initialize(void) {
 	OS_ENTER_CRITICAL();
 	TCCR1B = ((1 << CS12) | (0 << CS11) | (1 << CS10)); // timer1 1024 prescaling
 	TIMSK |= (1 << TOIE1);	// timer1 overflow interrupt enabled
-	TCNT1 = ONE;
+	TCNT1 = ONE_SEC;
 	OS_EXIT_CRITICAL();
 	
 	// 음계를 출력하기 위해 타이머 2를 적절히 설정
@@ -381,9 +475,22 @@ void initialize(void) {
     EICRB = 0x0a;       // 0b0000 1010, falling edge triger
     EIMSK = 0x30;       // 0b0011 0000,
 
+	// 온도 관련 설정
+	PORTD = 3; 						// For Pull-up override value
+    SFIOR &= ~(1 << PUD); 			// PUD
+    TWSR = 0; 						// TWPS0 = 0, TWPS1 = 0
+    TWBR = 32;						// for 100  K Hz bus clock
+	TWCR = _BV(TWEA) | _BV(TWEN);	// TWEA = Ack pulse is generated
+									// TWEN = TWI
+
+	// 조도 센서 관련 설정
+	ADMUX = 0x00;
+    ADCSRA = 0x87;
+
 	Sem = OSSemCreate(1);
 	TimerSem = OSSemCreate(0);
 	SwitchToControlSem = OSSemCreate(0);
+	TempMbox = OSMboxCreate((void*)0);
 	TaskControlFlag = OSFlagCreate(0x01, &err);		// CLOCK_DISPLAY 모드로 시작
 }
 
@@ -411,7 +518,7 @@ void timer_edit(void) {
 		INT16U temp_minute = TimerSCount / 60;
 		TimerSCount = (TimerSCount + 1) % 6000;
 
-		// 시간 단위 변경으로 인해 분 단위가 변경되는 것 방지
+		// 초 단위 변경으로 인해 분 단위가 변경되는 것 방지
 		if (temp_minute != TimerSCount / 60) {
 			TimerSCount = temp_minute * 60;
 		}
@@ -498,33 +605,28 @@ void change_mode() {
 	}
 	if (Sw2 == TRUE) {
 		if (Mode == CLOCK_DISPLAY) {
-			PORTA = 0x80;
 			Mode = TIMER_STOP;
 			Sw2 = FALSE;
 		}
 		else if (Mode == TIMER_PAUSE) {
-			PORTA = 0x88;
 			Mode = TIMER_STOP;
 			TimerSCount = 0;
 			Sw2 = FALSE;
 		}
 		else if (Mode == TIMER_STOP) {
-			PORTA = 0x40;
 			Mode = TEMP_DISPLAY;
-			Sw2 = FALSE;
-		}
-		else if (Mode == TEMP_DISPLAY) {
-			PORTA = 0x20;
-			Mode = LIGHT_DISPLAY;
-			Sw2 = FALSE;
-		}
-		else if (Mode == LIGHT_DISPLAY) {
-			PORTA = 0x10;
-			Mode = CLOCK_DISPLAY;
 			Sw2 = FALSE;
 		}
 		else if (Mode == TIMER_ALARM) {
 			Mode = TIMER_STOP;
+			Sw2 = FALSE;
+		}
+		else if (Mode == TEMP_DISPLAY) {
+			Mode = LIGHT_DISPLAY;
+			Sw2 = FALSE;
+		}
+		else if (Mode == LIGHT_DISPLAY) {
+			Mode = CLOCK_DISPLAY;
 			Sw2 = FALSE;
 		}
 		// *
@@ -538,6 +640,7 @@ void switch_task() {
 	INT8U err;
 
 	if (Mode == CLOCK_DISPLAY || Mode == CLOCK_HH_EDIT || Mode == CLOCK_MM_EDIT) {
+		OSFlagPost(TaskControlFlag, 0x08, OS_FLAG_CLR, &err);
 		OSFlagPost(TaskControlFlag, 0x01, OS_FLAG_SET, &err);
 	}
 	else if (Mode == TIMER_STOP || Mode == TIMER_SS_EDIT || Mode == TIMER_ALARM ||
@@ -553,4 +656,82 @@ void switch_task() {
 		OSFlagPost(TaskControlFlag, 0x04, OS_FLAG_CLR, &err);
 		OSFlagPost(TaskControlFlag, 0x08, OS_FLAG_SET, &err);
 	}
+}
+
+void write_twi_1byte_nopreset(UCHAR reg, UCHAR data) {
+	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN); // START
+	while (((TWCR & (1 << TWINT)) == 0x00) || ((TWSR & 0xf8) != 0x08 && (TWSR & 0xf8) != 0x10)); // ACK
+	TWDR = ATS75_ADDR | 0;  // SLA+W, W=0
+	TWCR = (1 << TWINT) | (1 << TWEN);  // SLA+W
+	while (((TWCR & (1 << TWINT)) == 0x00) || (TWSR & 0xf8) != 0x18);
+	TWDR = reg;    // aTS75 Reg
+	TWCR = (1 << TWINT) | (1 << TWEN);  // aTS75 Reg
+	while (((TWCR & (1 << TWINT)) == 0x00) || (TWSR & 0xF8) != 0x28);
+	TWDR = data;    // DATA
+	TWCR = (1 << TWINT) | (1 << TWEN);  // DATA
+	while (((TWCR & (1 << TWINT)) == 0x00) || (TWSR & 0xF8) != 0x28);
+	TWCR = (1 << TWINT) | (1 << TWSTO) | (1 << TWEN); // STOP
+}
+
+void write_twi_0byte_nopreset(UCHAR reg) {
+	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN); // START
+	while (((TWCR & (1 << TWINT)) == 0x00) || ((TWSR & 0xf8) != 0x08 && (TWSR & 0xf8) != 0x10));  // ACK
+	TWDR = ATS75_ADDR | 0; // SLA+W, W=0
+	TWCR = (1 << TWINT) | (1 << TWEN);  // SLA+W
+	while (((TWCR & (1 << TWINT)) == 0x00) || (TWSR & 0xf8) != 0x18);
+	TWDR = reg;    // aTS75 Reg
+	TWCR = (1 << TWINT) | (1 << TWEN);  // aTS75 Reg
+	while (((TWCR & (1 << TWINT)) == 0x00) || (TWSR & 0xF8) != 0x28);
+	TWCR = (1 << TWINT) | (1 << TWSTO) | (1 << TWEN); // STOP
+}
+
+int ReadTemperature(void)
+{
+	int value;
+
+	TWCR = _BV(TWSTA) | _BV(TWINT) | _BV(TWEN);
+	while(!(TWCR & _BV(TWINT)));
+
+	TWDR = 0x98 + 1; //TEMP_I2C_ADDR + 1
+	TWCR = _BV(TWINT) | _BV(TWEN);
+	while(!(TWCR & _BV(TWINT)));
+
+	TWCR = _BV(TWINT) | _BV(TWEN) | _BV(TWEA);
+	while(!(TWCR & _BV(TWINT)));
+
+	value = TWDR << 8;
+	TWCR = _BV(TWINT) | _BV(TWEN);
+	while(!(TWCR & _BV(TWINT)));
+
+	value |= TWDR;
+	TWCR = _BV(TWINT) | _BV(TWEN) | _BV(TWSTO);
+
+	value >>= 8;
+
+	TIMSK = (value >= 33) ? TIMSK | _BV(TOIE2): TIMSK & ~_BV(TOIE2);
+
+	return value;
+}
+
+unsigned short read_adc()
+{
+    unsigned char adc_low, adc_high;
+    unsigned short value;
+
+    ADCSRA |= 0x40;     // start conversion
+    while((ADCSRA & 0x10) != 0x10);
+
+    adc_low = ADCL;
+    adc_high = ADCH;
+    value = (adc_high << 8) | adc_low;
+
+    return value;
+}
+
+void show_adc(unsigned short value)
+{
+    if (value < CDS_VALUE)
+        PORTA = 0xff;
+    else
+        PORTA = 0x00;
 }

@@ -39,8 +39,8 @@
 #define OS_LOWEST_PRIO           12    /* Defines the lowest priority that can be assigned ...         */
                                        /* ... MUST NEVER be higher than 63!                            */
 
-#define OS_MAX_EVENTS             3    /* Max. number of event control blocks in your application      */
-#define OS_MAX_FLAGS              2    /* Max. number of Event Flag Groups    in your application      */
+#define OS_MAX_EVENTS             4    /* Max. number of event control blocks in your application      */
+#define OS_MAX_FLAGS              1    /* Max. number of Event Flag Groups    in your application      */
 #define OS_MAX_MEM_PART           1    /* Max. number of memory partitions                             */
 #define OS_MAX_QS                 2    /* Max. number of queue control blocks in your application      */
 #define OS_MAX_TASKS             11    /* Max. number of tasks in your application, MUST be >= 2       */
@@ -70,7 +70,7 @@
 
                                        /* -------------------- MESSAGE MAILBOXES --------------------- */
 #define OS_MBOX_EN                1    /* Enable (1) or Disable (0) code generation for MAILBOXES      */
-#define OS_MBOX_ACCEPT_EN         0    /*     Include code for OSMboxAccept()                          */
+#define OS_MBOX_ACCEPT_EN         1    /*     Include code for OSMboxAccept()                          */
 #define OS_MBOX_DEL_EN            0    /*     Include code for OSMboxDel()                             */
 #define OS_MBOX_POST_EN           1    /*     Include code for OSMboxPost()                            */
 #define OS_MBOX_POST_OPT_EN       0    /*     Include code for OSMboxPostOpt()                         */
