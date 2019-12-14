@@ -305,3 +305,5 @@ if (temp != (void*)0) {
 TemperatureDisplayTask는 메일 박스를 통해 전달받은 온도값을 FND에 출력한다.
 
 ## 조명도 출력 모드 구현
+
+조명도 출력 모드는 **LightTask**가 수행한다. LightTask 내부 반복문에서는 먼저 TaskControlFlag에 LightTask가 실행될 수 있는 상태로 비트 설정이 되어 있는지 판단한다(3번째 비트가 설정되어 있어야 한다). 그 다음 **read_adc()**라는 함수를 호출하여 현재 조명에 따른 CdS 센서값을 읽어서 반환한다. 이 값을 **show_adc()**라는 함수에 넘겨주어 조명값에 따라서 LED를 켠다.

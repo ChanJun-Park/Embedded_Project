@@ -52,7 +52,11 @@
 #define ATS75_CONFIG_REG 1
 
 /* led를 켜는 기준이 되는 CDS 값 */
-#define CDS_VALUE 871
+/* 1lux = 600, 10LUX = 35, 100LUX = 7 의 값을 참고함.
+출처 datasheet/fig.4 https://www.kth.se/social/files/54ef17dbf27654753f437c56/GL5537.pdf */
+#define CDS_1LUX 256
+#define CDS_10LUX 871
+#define CDS_100LUX 995
 
 /* 전체 상태 관리 상수 */
 #define CLOCK_DISPLAY 	0
@@ -642,6 +646,7 @@ void change_mode() {
 			Mode = TEMP_DISPLAY;
 		}
 		else if (Mode == TEMP_DISPLAY) {
+			PORTC = 0x00;
 			Mode = LIGHT_DISPLAY;
 		}
 		else if (Mode == LIGHT_DISPLAY) {
@@ -754,8 +759,12 @@ unsigned short read_adc()
 // 주어진 조명값에 따라서 LED를 켜는 함수
 void show_adc(unsigned short value)
 {
-    if (value < CDS_VALUE)
-        PORTA = 0xff;
+	if(value < CDS_1LUX)
+		PORTA = 0xff;
+    else if (value < CDS_10LUX)
+        PORTA = 0xaa;
+	else if ( value < CDS_100LUX)
+		PORTA = 0x42;
     else
         PORTA = 0x00;
 }
