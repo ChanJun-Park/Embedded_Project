@@ -1,11 +1,13 @@
 #include "includes.h"
 
 #define F_CPU	16000000UL	// CPU frequency = 16 Mhz
+
 #include <avr/io.h>
 #include <avr/interrupt.h>	// interrupt 관련
 #include <util/delay.h>
+
 #define  TASK_STK_SIZE  OS_TASK_DEF_STK_SIZE
-#define  N_TASKS        7	// *
+#define  N_TASKS        7
 
 /* timer1 1024 prescaling의 경우 초 단위 clock 개수*/
 #define ONE_SEC -15626
@@ -14,7 +16,7 @@
 #define ON 1
 #define OFF 0
 
-/* timer2 32 prescaling 음계 */
+/* timer2 32분주 prescaling 음계 */
 #define MUT 0
 #define DO 17
 #define RE 43
@@ -39,6 +41,7 @@
 #define THREE 180
 #define FOUR 240
 
+/* 알람 음악 길이 상수 */
 #define MELODY_LEN	61
 
 /* 온도관련 상수 */
@@ -47,6 +50,9 @@
 #define ATS75_ADDR 0x98
 #define ATS75_TEMP_REG 0
 #define ATS75_CONFIG_REG 1
+
+/* led를 켜는 기준이 되는 CDS 값 */
+#define CDS_VALUE 871
 
 /* 전체 상태 관리 상수 */
 #define CLOCK_DISPLAY 	0
@@ -63,6 +69,7 @@
 #define TEMP_DISPLAY	9
 #define LIGHT_DISPLAY 	11
 
+/* FND 관련 배열 */
 typedef unsigned char uc;
 const uc digit[10] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x27, 0x7f, 0x6f};
 const uc fnd_sel[4] = {0x01, 0x02, 0x04, 0x08};
@@ -110,7 +117,6 @@ OS_EVENT 	  *TempMbox;				// 온도값을 저장하는 메일박스
 volatile INT8U  	Mode;		// 전체 동작 모드 관리 전역변수
 volatile BOOLEAN 	Sw1;		// 스위치1 눌림 체크 전역 변수
 volatile BOOLEAN 	Sw2;		// 스위치2 눌림 체크 전역 변수
-volatile INT8U 		err;
 
 volatile INT32U  ClockSCount;	// 시간 카운트 변수
 volatile uc 	 ClockFnd[4];	// 현재 시간 (HH:MM)
@@ -122,8 +128,8 @@ void ControlTask(void *data);  	// 전체 테스크 실행 순서 관리 테스�
 void ClockTask(void *data);	   	// 시계 모드 관리 테스크
 void TimerAlarmTask(void *data);// 타이머 알람 출력 테스크
 void TimerTask(void *data);    	// 타이머 모드 관리 테스크
-void TemperatureTask (void *data);			// 온도 관련 테스크
-void TemperatureDisplayTask (void *data);	// 온도 출력 관련 테스크
+void TemperatureTask (void *data);			// 온도 측정 테스크
+void TemperatureDisplayTask (void *data);	// 온도 출력 테스크
 void LightTask(void *data);		// 조명도 관련 테스크
 
 void initialize(void);
@@ -135,14 +141,14 @@ void display_fnd(uc * fnd);
 void change_mode(void);
 void switch_task(void);
 
-/* 조명도 관련 함수 */
-unsigned short read_adc();
-void show_adc(unsigned short value);
-
 /* 온도 관련 함수 */
 void write_twi_1byte_nopreset(UCHAR reg, UCHAR data);
 void write_twi_0byte_nopreset(UCHAR reg);
 int ReadTemperature(void);
+
+/* 조명도 관련 함수 */
+unsigned short read_adc();
+void show_adc(unsigned short value);
 
 /* 인터럽트 핸들러 정의 */
 // Sw1
@@ -227,6 +233,8 @@ int main (void)
 
 /************************************ Task 정의 ****************************************/
 
+// 스위치가 눌림에 따라서 TaskControlFlag값을 적절히 설정하여
+// 전체 테스크의 실행 순서를 관리하는 테스크
 void ControlTask (void *data)
 {
 	INT8U err;
@@ -249,6 +257,7 @@ void ControlTask (void *data)
 	}
 }
 
+// 현재 시간을 출력하는 테스크
 void ClockTask (void *data)
 {
 	INT8U err;
@@ -266,6 +275,8 @@ void ClockTask (void *data)
 		ClockFnd[2] += dot;
 		for (i = 0; i < 50; i++) {
 			display_fnd(ClockFnd);
+			if (Mode != CLOCK_DISPLAY && Mode != CLOCK_HH_EDIT && Mode != CLOCK_MM_EDIT)
+				break;
 		}
 
 		ClockFnd[2] -= dot;
@@ -280,10 +291,15 @@ void ClockTask (void *data)
 		
 		for (i = 0; i < 50; i++) {
 			display_fnd(ClockFnd);
+			if (Mode != CLOCK_DISPLAY && Mode != CLOCK_HH_EDIT && Mode != CLOCK_MM_EDIT)
+				break;
 		}
 	}
 }
 
+// 타이머가 끝나면 알람을 울리는 테스크. TimerTask보다 우선순위가 높지만
+// TiemerSem을 Pend하여 세마포를 획득하는 경우에만 실행되고, 나머지 경우에는
+// TimerTask에게 실행을 양도한다.
 void TimerAlarmTask(void *data)
 {
 	INT8U err;
@@ -292,20 +308,20 @@ void TimerAlarmTask(void *data)
 		OSSemPend(TimerSem, 0, &err);
 		note_idx = 0;
 		mel_idx = 0;
-		TIMSK |= (1 << TOIE2);	// timer2 overflow interrupt enabled
-		while(Mode == TIMER_ALARM) {
-			TCNT2 = melody[mel_idx];
+		
+		TIMSK |= (1 << TOIE2);	// 알람 출력을 위해 timer2 overflow interrupt enabled
+		TCNT2 = melody[mel_idx];
 
-			while(Mode == TIMER_ALARM) {
-				OSTimeDly(note[note_idx]);	// FND 출력과 음계 출력을 위한 양도
-				note_idx = (note_idx + 1) % MELODY_LEN;
-				mel_idx = (mel_idx + 1) % MELODY_LEN;
-			}
+		while(Mode == TIMER_ALARM) {
+			OSTimeDly(note[note_idx]);	// FND 출력과 음계 출력을 위한 양도
+			note_idx = (note_idx + 1) % MELODY_LEN;
+			mel_idx = (mel_idx + 1) % MELODY_LEN;
 		}
-		TIMSK &= ~(1 << TOIE2);	// timer2 overflow interrupt disabled
+		TIMSK &= ~(1 << TOIE2);	// 알람 종료를 위해 timer2 overflow interrupt disabled
 	}
 }
 
+// 사용자가 설정한 타이머를 카운트하고 FND에 출력하는 테스크
 void TimerTask (void * data)
 {
 	INT8U err;
@@ -321,33 +337,44 @@ void TimerTask (void * data)
 		if (Mode == TIMER_STOP || Mode == TIMER_PAUSE || Mode == TIMER_ALARM) {
 			if (TimesUp == TRUE) {
 				TimesUp = FALSE;
-				Mode = TIMER_ALARM;
 				OSSemPost(TimerSem);
 			}
 
 			TimerFnd[2] += dot;
 			for (i = 0; i < 100; i++) {
 				display_fnd(TimerFnd);
+				if (Mode != TIMER_STOP && Mode != TIMER_PAUSE && Mode != TIMER_ALARM)
+					break;
 			}
 		}
 		else if (Mode == TIMER_COUNT) {
 
 			TimerFnd[2] += dot;
-			for (i = 0; i < 50; i++) {
-				display_fnd(TimerFnd);
-			}
-			TimerFnd[2] -= dot;
-			for (i = 0; i < 50; i++) {
+			for (i = 0; i < 50 && Mode == TIMER_COUNT; i++) {
 				display_fnd(TimerFnd);
 			}
 
-			TimerSCount -= 1;
-			if (TimerSCount <= 0) {
-				Mode = TIMER_STOP;
+			TimerFnd[2] -= dot;
+			for (i = 0; i < 50 && Mode == TIMER_COUNT; i++) {
+				display_fnd(TimerFnd);
+			}
+
+			if (TimerSCount == 0) {
+				Mode = TIMER_ALARM;
 				TimesUp = TRUE;
 			}
+			else {
+				if (Mode == TIMER_PAUSE)
+					continue;
+				TimerSCount -= 1;
+			}
 		}
-		else { // if (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT)
+		else { // if Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT
+			TimerFnd[2] += dot;
+			for (i = 0; i < 50 && (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT); i++) {
+				display_fnd(TimerFnd);
+			}
+
 			TimerFnd[2] -= dot;
 			if (Mode == TIMER_MM_EDIT) {
 				TimerFnd[3] = 0;
@@ -357,20 +384,16 @@ void TimerTask (void * data)
 				TimerFnd[1] = 0;
 				TimerFnd[0] = 0;
 			}
-
-			for (i = 0; i < 50; i++) {
-				display_fnd(TimerFnd);
-			}
-			
-			calculate_mm_ss(TimerSCount);
-			TimerFnd[2] += dot;
-			for (i = 0; i < 50; i++) {
+			for (i = 0; i < 50 && (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT); i++) {
 				display_fnd(TimerFnd);
 			}
 		}
 	}
 }
 
+// 현재 온도를 계산하는 테스크. 현재 온도값을 계산하여 TempMbox 메일박스에
+// 전달하고, TemperatureDisplayTask가 이를 화면에 출력할 수 있도록
+// OSTimeDly 를 통해 실행을 양도한다.
 void TemperatureTask (void *data)
 {
 	int	value;
@@ -396,6 +419,7 @@ void TemperatureTask (void *data)
 	}
 }
 
+// 현재 온도를 FND에 출력하는 테스크.
 void TemperatureDisplayTask (void *data)
 {
 	INT8U value;
@@ -420,6 +444,7 @@ void TemperatureDisplayTask (void *data)
 	}
 }
 
+// 현재 조명값에 따라서 LED를 켜거나 끄는 테스크
 void LightTask(void *data)
 {
 	INT8U err;
@@ -438,6 +463,8 @@ void LightTask(void *data)
 /************************************ 사용 함수 정의 ************************************/
 
 void initialize(void) {
+	INT8U err;
+
 	// OSTimeDly 쓰기 위해 타이머 0를 적절히 설정
 	OS_ENTER_CRITICAL();
 	TCCR0 = 0x07;
@@ -450,27 +477,27 @@ void initialize(void) {
 	Mode = CLOCK_DISPLAY;
 	TimerSCount = 0;
 
-	// 시간을 계산하기 위해 타이머 1를 적절히 설정
+	// 시간을 계산하기 위해 타이머 1 분주비 설정
 	OS_ENTER_CRITICAL();
 	TCCR1B = ((1 << CS12) | (0 << CS11) | (1 << CS10)); // timer1 1024 prescaling
 	TIMSK |= (1 << TOIE1);	// timer1 overflow interrupt enabled
 	TCNT1 = ONE_SEC;
 	OS_EXIT_CRITICAL();
 	
-	// 음계를 출력하기 위해 타이머 2를 적절히 설정
+	// 음계를 출력하기 위해 타이머 2 분주비 설정
 	TCCR2 = ((0 << CS22) | (1 << CS21) | (1 << CS20));	// timer2 clock 32 prescaling
 
-	// buzzer
+	// buzzer 출력 설정
 	DDRB = 0x10;
 
-	// fnd 설정
+	// fnd 출력 설정
 	DDRC = 0xff;
     DDRG = 0x0f;
 
-	// 디버그용 led
+	// 디버그용 led 출력 설정
 	DDRA = 0xff;
 
-    // 스위치 설정
+    // 스위치 입력 설정
     DDRE = 0xcf;        // 0b1100 1111
     EICRB = 0x0a;       // 0b0000 1010, falling edge triger
     EIMSK = 0x30;       // 0b0011 0000,
@@ -494,6 +521,7 @@ void initialize(void) {
 	TaskControlFlag = OSFlagCreate(0x01, &err);		// CLOCK_DISPLAY 모드로 시작
 }
 
+// 시간을 1 시간 또는 1 분 증가시키는 함수
 void clock_edit(void) {
 	if (Mode == CLOCK_HH_EDIT) {
 		ClockSCount = (ClockSCount + 3600) % 86400;
@@ -510,6 +538,7 @@ void clock_edit(void) {
 	calculate_hh_mm(ClockSCount);
 }
 
+// 타이머를 1분 또는 1초 증가시키는 함수
 void timer_edit(void) {
 	if (Mode == TIMER_MM_EDIT) {
 		TimerSCount = (TimerSCount + 60) % 6000;
@@ -526,6 +555,7 @@ void timer_edit(void) {
 	calculate_mm_ss(TimerSCount);
 }
 
+// FND 에 출력할 시간과 분을 계산하여 ClockFnd 배열에 저장하는 함수
 void calculate_hh_mm(INT32U scount) {
 	INT8U hh, mm;
 
@@ -538,6 +568,7 @@ void calculate_hh_mm(INT32U scount) {
 	ClockFnd[0] = digit[mm % 10];
 }
 
+// FND 에 출력할 분과 초를 계산하여 TimerFnd 배열에 저장하는 함수
 void calculate_mm_ss(INT16U scount) {
 	INT8U mm, ss;
 
@@ -561,81 +592,69 @@ void display_fnd(uc * fnd) {
     }
 }
 
+// 스위치가 눌림에 따라서 현재 Mode를 변경시키는 함수
 void change_mode() {
 	if (Sw1 == TRUE) {
 		if (Mode == CLOCK_DISPLAY) {
-			TIMSK &= ~(1 << TOIE1);	// timer1 overflow interrupt disabled
+			TIMSK &= ~(1 << TOIE1);	// 시간을 수정하는 동안 시계를 멈춰둔다.
 			Mode = CLOCK_HH_EDIT;
-			Sw1 = FALSE;
 		}
 		else if (Mode == CLOCK_HH_EDIT) {
 			Mode = CLOCK_MM_EDIT;
-			Sw1 = FALSE;
 		}
 		else if (Mode == CLOCK_MM_EDIT) {
-			TIMSK |= (1 << TOIE1);	// timer1 overflow interrupt enabled
+			TIMSK |= (1 << TOIE1);	// 시간 수정 완료 후 다시 타이머를 작동
 			Mode = CLOCK_DISPLAY;
-			Sw1 = FALSE;
 		}
 		else if (Mode == TIMER_STOP) {
 			Mode = TIMER_MM_EDIT;
-			Sw1 = FALSE;
 		}
 		else if (Mode == TIMER_MM_EDIT) {
 			Mode = TIMER_SS_EDIT;
-			Sw1 = FALSE;
 		}
 		else if (Mode == TIMER_SS_EDIT) {
 			Mode = TIMER_COUNT;
-			Sw1 = FALSE;
 		}
 		else if (Mode == TIMER_COUNT) {
 			Mode = TIMER_PAUSE;
-			Sw1 = FALSE;
 		}
 		else if (Mode == TIMER_PAUSE) {
 			Mode = TIMER_COUNT;
-			Sw1 = FALSE;
 		}
 		else if (Mode == TIMER_ALARM) {
 			Mode = TIMER_STOP;
-			Sw1 = FALSE;
 		}
+		Sw1 = FALSE;
 		return;
 	}
 	if (Sw2 == TRUE) {
 		if (Mode == CLOCK_DISPLAY) {
 			Mode = TIMER_STOP;
-			Sw2 = FALSE;
 		}
 		else if (Mode == TIMER_PAUSE) {
 			Mode = TIMER_STOP;
 			TimerSCount = 0;
-			Sw2 = FALSE;
-		}
-		else if (Mode == TIMER_STOP) {
-			Mode = TEMP_DISPLAY;
-			Sw2 = FALSE;
 		}
 		else if (Mode == TIMER_ALARM) {
 			Mode = TIMER_STOP;
-			Sw2 = FALSE;
+		}
+		else if (Mode == TIMER_STOP) {
+			Mode = TEMP_DISPLAY;
 		}
 		else if (Mode == TEMP_DISPLAY) {
 			Mode = LIGHT_DISPLAY;
-			Sw2 = FALSE;
 		}
 		else if (Mode == LIGHT_DISPLAY) {
 			Mode = CLOCK_DISPLAY;
-			Sw2 = FALSE;
 		}
-		// *
+		Sw2 = FALSE;
+		return;
 	}
 }
 
-/*
-	현재 Mode에 알맞는 TaskControlFlag 값을 설정해준다.
-*/
+
+// 현재 Mode에 알맞는 TaskControlFlag 값을 설정하여
+// 적절한 테스크가 실행되도록 하는 함수
 void switch_task() {
 	INT8U err;
 
@@ -658,6 +677,7 @@ void switch_task() {
 	}
 }
 
+// TWI 출력 관련 함수
 void write_twi_1byte_nopreset(UCHAR reg, UCHAR data) {
 	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN); // START
 	while (((TWCR & (1 << TWINT)) == 0x00) || ((TWSR & 0xf8) != 0x08 && (TWSR & 0xf8) != 0x10)); // ACK
@@ -673,6 +693,7 @@ void write_twi_1byte_nopreset(UCHAR reg, UCHAR data) {
 	TWCR = (1 << TWINT) | (1 << TWSTO) | (1 << TWEN); // STOP
 }
 
+// TWI 출력 관련 함수
 void write_twi_0byte_nopreset(UCHAR reg) {
 	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN); // START
 	while (((TWCR & (1 << TWINT)) == 0x00) || ((TWSR & 0xf8) != 0x08 && (TWSR & 0xf8) != 0x10));  // ACK
@@ -685,6 +706,7 @@ void write_twi_0byte_nopreset(UCHAR reg) {
 	TWCR = (1 << TWINT) | (1 << TWSTO) | (1 << TWEN); // STOP
 }
 
+// 온도센서로부터 온도를 읽어서 반환하는 함수
 int ReadTemperature(void)
 {
 	int value;
@@ -713,6 +735,7 @@ int ReadTemperature(void)
 	return value;
 }
 
+// 현재 조명에 대한 값을 반환하는 함수
 unsigned short read_adc()
 {
     unsigned char adc_low, adc_high;
@@ -728,6 +751,7 @@ unsigned short read_adc()
     return value;
 }
 
+// 주어진 조명값에 따라서 LED를 켜는 함수
 void show_adc(unsigned short value)
 {
     if (value < CDS_VALUE)
