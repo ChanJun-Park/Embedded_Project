@@ -1,5 +1,10 @@
 # 임베디드 소프트웨어 최종 과제
 
+<div style="overflow:hidden"><img src="https://user-images.githubusercontent.com/31771548/93281628-6d463a80-f807-11ea-92a6-0ec46f6d0b82.jpg" width="400px" style="float:left;">
+<img src="https://user-images.githubusercontent.com/31771548/93282781-1c841100-f80a-11ea-95af-07caada69859.png" width="450px" style="float:left;"></div>
+
+**JKIT-128-1(atmega128(AVR) 개발/실습 키트)** 를 활용하여 4가지 모드를 지원하는 디지털 시계 제작.
+
 ## 주제 : 4가지 모드 지원 시계
 
 - 24시간 디스플레이 시계 모드
@@ -21,6 +26,8 @@
 
 ### 분, 초 단위 카운트 타이머 모드
 
+<center><img src="https://user-images.githubusercontent.com/31771548/93282078-83082f80-f808-11ea-86dd-fb5ff10cbe4c.jpg" width="400px"></center>
+
 사용자가 설정한 단위의 시간이 지나면 버저가 울리는 기능이다.
 
 맨 처음에는 00:00이 FND에 표시된다. 맨 처음 SW1을 누르면 분 단위를 수정할 수 있는 모드가 된다. 그 다음 SW2를 누르면 1분 단위가 증가한다. 다시 SW1을 누르면 초 단위를 수정할 수 있는 모드가 된다. 그 다음 SW2를 누르면 1초 단위가 증가한다. 마지막으로 SW1을 누르면 곧바로 카운트를 시작한다. 시간을 카운트 하는 도중에 SW1을 누르면 멈추게 되고, 다시 SW1을 누르면 카운트가 재시작한다. 또는 SW2를 누르게 되면 카운트가 리셋되어 00:00이 FND에 출력된다.
@@ -39,9 +46,17 @@ jkit-128-1에 달린 **온도센서**를 이용해서 온도를 측정하고 FND
 
 ### 조명도 디스플레이 모드
 
-jkit-128-1에 달린 **CdS 광센서**를 이용해서 조도에 따라 LED를 켜거나 끄는 모드다.
+<div style="overflow:hidden;"><img src="https://user-images.githubusercontent.com/31771548/93282302-0fb2ed80-f809-11ea-8a6e-7f9b9a277716.jpg" width="335px" style="float:left;"><img src="https://user-images.githubusercontent.com/31771548/93282082-84395c80-f808-11ea-9193-705fef58f97e.jpg" width="400px" style="float:left;"></div>
+
+<br>
+
+jkit-128-1에 달린 **CdS 광센서** 를 이용해서 조도에 따라 LED를 켜거나 끄는 모드다.
 
 ![4](image/4.png)
+
+## 전체 소스코드
+
+[lab2.c](./app/lab2.c)
 
 ## 전체 Task 실행 개괄
 
@@ -55,19 +70,19 @@ jkit-128-1에 달린 **CdS 광센서**를 이용해서 조도에 따라 LED를 �
 
 ```c
 /* 전체 상태 관리 상수 */
-#define CLOCK_DISPLAY 	0
-#define CLOCK_HH_EDIT 	1
-#define CLOCK_MM_EDIT 	2
+#define CLOCK_DISPLAY     0
+#define CLOCK_HH_EDIT     1
+#define CLOCK_MM_EDIT     2
 
-#define TIMER_STOP 		3
-#define TIMER_MM_EDIT 	4
-#define TIMER_SS_EDIT 	5
-#define TIMER_COUNT		6
-#define TIMER_PAUSE		7
-#define TIMER_ALARM		8
+#define TIMER_STOP        3
+#define TIMER_MM_EDIT     4
+#define TIMER_SS_EDIT     5
+#define TIMER_COUNT       6
+#define TIMER_PAUSE       7
+#define TIMER_ALARM       8
 
-#define TEMP_DISPLAY	9
-#define LIGHT_DISPLAY 	11
+#define TEMP_DISPLAY      9
+#define LIGHT_DISPLAY    11
 ```
 
 ### 스위치 인터럽트와 Sw1, Sw2 전역변수
@@ -155,13 +170,57 @@ ISR(TIMER1_OVF_vect) {
 
 ### 화면에 시간 출력
 
-24시간 디스플레이 모드를 관리하는 테스크는 **ClockTask**이다. ClockTask 내부 반복에서는 먼저 다음과 같이 TaskControlFlag에 ClockTask가 실행될 수 있는 상태로 비트가 설정되어 있는지 판단한다.
+24시간 디스플레이 모드를 관리하는 테스크는 **ClockTask**이다.
+
+```c
+// 현재 시간을 출력하는 테스크
+void ClockTask (void *data)
+{
+    INT8U err;
+    INT8U i;
+    INT32U temp_hour;
+
+    for (;;) {
+        OSFlagPend(TaskControlFlag, 0x01, OS_FLAG_WAIT_SET_ALL, 0, &err); // no consume
+        calculate_hh_mm(ClockSCount);
+
+        PORTA = 0x80;
+
+        // 현재 시간 출력
+        // 깜빡거리는 효과를 위해서 0.5초는 정상출력, 0.5초는 FND의 특정 세그먼트를 제외하고 출력
+        ClockFnd[2] += dot;
+        for (i = 0; i < 50; i++) {
+            display_fnd(ClockFnd);
+            if (Mode != CLOCK_DISPLAY && Mode != CLOCK_HH_EDIT && Mode != CLOCK_MM_EDIT)
+                break;
+        }
+
+        ClockFnd[2] -= dot;
+        if (Mode == CLOCK_HH_EDIT) {
+            ClockFnd[3] = 0;
+            ClockFnd[2] = 0;
+        }
+        else if (Mode == CLOCK_MM_EDIT) {
+            ClockFnd[1] = 0;
+            ClockFnd[0] = 0;
+        }
+        
+        for (i = 0; i < 50; i++) {
+            display_fnd(ClockFnd);
+            if (Mode != CLOCK_DISPLAY && Mode != CLOCK_HH_EDIT && Mode != CLOCK_MM_EDIT)
+                break;
+        }
+    }
+}
+```
+
+ClockTask 내부 반복에서는 먼저 다음과 같이 TaskControlFlag에 ClockTask가 실행될 수 있는 상태로 비트가 설정되어 있는지 판단한다.
 
 ```c
 OSFlagPend(TaskControlFlag, 0x01, OS_FLAG_WAIT_SET_ALL, 0, &err);
 ```
 
-위 함수는 이벤트 플래그에 설정된 비트를 consume 하지 않는데 그 이유는 스위치가 눌리지 않는 이상 플래그 값을 그대로 두어 계속해서 이벤트 플래그를 설정하지 않아도 되도록 하기 위함이다.
+위 함수는 이벤트 플래그에 설정된 비트를 consume 하지 않는데 그 이유는 스위치가 눌리지 않는 이상 플래그 값을 그대로 두어 ControlTask 가 이벤트 플래그를 계속해서 설정하지 않아도 ClockTask가 반복적으로 실행 되도록 하기 위함이다.
 
 그 다음 **calculate_hh_mm()** 라는 함수를 통해서 **ClockSCount** 값에서 시간과 분을 추출한뒤, 이 값을 **ClockFnd** 라는 전역 배열에 저장하고, **display_fnd()** 함수 호출을 통해서 FND에 시간을 출력하게 된다.
 
@@ -205,7 +264,81 @@ void clock_edit(void) {
 
 ## 분, 초 단위 카운트 타이머 구현
 
-분, 초 단위 카운트 타이머 모드는 **TimerAlarmTask**와 **TimerTask**가 협력하여 수행한다. TimerTask 내부 반복에서는 먼저 다음과 같이 TaskControlFlag에 TimerTask가 실행될 수 있는 상태로 비트가 설정되어 있는지 판단한다.
+분, 초 단위 카운트 타이머 모드는 **TimerAlarmTask**와 **TimerTask**가 협력하여 수행한다.
+
+```c
+// 사용자가 설정한 타이머를 카운트하고 FND에 출력하는 테스크
+void TimerTask (void * data)
+{
+    INT8U err;
+    INT8U i;
+    volatile BOOLEAN TimesUp = FALSE;
+
+    for(;;) {
+        OSFlagPend(TaskControlFlag, 0x02, OS_FLAG_WAIT_SET_ALL, 0, &err); // no consume
+        calculate_mm_ss(TimerSCount);
+
+        PORTA = 0x40;
+
+        if (Mode == TIMER_STOP || Mode == TIMER_PAUSE || Mode == TIMER_ALARM) {
+            if (TimesUp == TRUE) {
+                TimesUp = FALSE;
+                OSSemPost(TimerSem);
+            }
+
+            TimerFnd[2] += dot;
+            for (i = 0; i < 100; i++) {
+                display_fnd(TimerFnd);
+                if (Mode != TIMER_STOP && Mode != TIMER_PAUSE && Mode != TIMER_ALARM)
+                    break;
+            }
+        }
+        else if (Mode == TIMER_COUNT) {
+
+            TimerFnd[2] += dot;
+            for (i = 0; i < 50 && Mode == TIMER_COUNT; i++) {
+                display_fnd(TimerFnd);
+            }
+
+            TimerFnd[2] -= dot;
+            for (i = 0; i < 50 && Mode == TIMER_COUNT; i++) {
+                display_fnd(TimerFnd);
+            }
+
+            if (TimerSCount == 0) {
+                Mode = TIMER_ALARM;
+                TimesUp = TRUE;
+            }
+            else {
+                if (Mode == TIMER_PAUSE)
+                    continue;
+                TimerSCount -= 1;
+            }
+        }
+        else { // if Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT
+            TimerFnd[2] += dot;
+            for (i = 0; i < 50 && (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT); i++) {
+                display_fnd(TimerFnd);
+            }
+
+            TimerFnd[2] -= dot;
+            if (Mode == TIMER_MM_EDIT) {
+                TimerFnd[3] = 0;
+                TimerFnd[2] = 0;
+            }
+            else if (Mode == TIMER_SS_EDIT) {
+                TimerFnd[1] = 0;
+                TimerFnd[0] = 0;
+            }
+            for (i = 0; i < 50 && (Mode == TIMER_MM_EDIT || Mode == TIMER_SS_EDIT); i++) {
+                display_fnd(TimerFnd);
+            }
+        }
+    }
+}
+```
+
+TimerTask 내부 반복에서는 먼저 다음과 같이 TaskControlFlag에 TimerTask가 실행될 수 있는 상태로 비트가 설정되어 있는지 판단한다.
 
 ```c
 OSFlagPend(TaskControlFlag, 0x02, OS_FLAG_WAIT_SET_ALL, 0, &err);
@@ -240,15 +373,15 @@ void TimerAlarmTask(void *data)
         note_idx = 0;
         mel_idx = 0;
 
-        TIMSK |= (1 << TOIE2);	// 알람 출력을 위해 timer2 overflow interrupt enabled
+        TIMSK |= (1 << TOIE2);    // 알람 출력을 위해 timer2 overflow interrupt enabled
         TCNT2 = melody[mel_idx];
 
         while(Mode == TIMER_ALARM) {
-            OSTimeDly(note[note_idx]);	// FND 출력과 음계 출력을 위한 양도
+            OSTimeDly(note[note_idx]);    // FND 출력과 음계 출력을 위한 양도
             note_idx = (note_idx + 1) % MELODY_LEN;
             mel_idx = (mel_idx + 1) % MELODY_LEN;
         }
-        TIMSK &= ~(1 << TOIE2);	// 알람 종료를 위해 timer2 overflow interrupt disabled
+        TIMSK &= ~(1 << TOIE2);    // 알람 종료를 위해 timer2 overflow interrupt disabled
     }
 }
 ```
@@ -289,9 +422,70 @@ ISR (TIMER2_OVF_vect) {
 
 온도 출력 모드는 **TemperatureTask** 와 **TemperatureDisplayTask** 가 협력하여 수행한다.
 
+```c
+// 현재 온도를 계산하는 테스크. 현재 온도값을 계산하여 TempMbox 메일박스에
+// 전달하고, TemperatureDisplayTask가 이를 화면에 출력할 수 있도록
+// OSTimeDly 를 통해 실행을 양도한다.
+void TemperatureTask (void *data)
+{
+    int	value;
+    INT8U err;
+
+    data = data;
+
+    write_twi_1byte_nopreset(ATS75_CONFIG_REG, 0x00);
+    write_twi_0byte_nopreset(ATS75_TEMP_REG);
+    while (1)  {
+        OSFlagPend(TaskControlFlag, 0x04, OS_FLAG_WAIT_SET_ALL, 0 ,&err);  // no consume;
+        PORTA = 0x20;
+
+        OS_ENTER_CRITICAL();
+        value = ReadTemperature();
+        OS_EXIT_CRITICAL();
+
+        OS_ENTER_CRITICAL();
+        OSMboxPost(TempMbox, (void*)& value);
+        OS_EXIT_CRITICAL();
+
+        OSTimeDly(100);
+    }
+}
+
+// 현재 온도를 FND에 출력하는 테스크.
+void TemperatureDisplayTask (void *data)
+{
+    INT8U value;
+    INT8U err;
+
+    void *temp;
+    data = data;
+
+    for(;;) {
+        OSFlagPend(TaskControlFlag, 0x04, OS_FLAG_WAIT_SET_ALL, 0 ,&err);  // no consume;
+        temp = OSMboxAccept(TempMbox);
+        if (temp != (void*)0) {
+            value = *(INT8U*)temp;
+        }
+
+        PORTC = digit[value % 10];
+        PORTG = 0x01;
+        _delay_ms(2);
+        PORTC = digit[value / 10];
+        PORTG = 0x02;
+        _delay_ms(2);
+    }
+}
+```
+
 ![7](image/7.png)
 
-TemperatureTask와 TemperatureDisplayTask 내부 반복에서는 먼저 다음과 같이 TaskControlFlag에 TemperatureTask 실행될 수 있는 상태로 비트가 설정되어 있는지 판단한다. TemperatureTask는 온도센서와 **TWI 통신**을 하여 현재의 온도값을 읽어온 뒤, **TempMbox** 라는 메일박스에 온도값을 전달하고, OSTimeDly를 통해 TemperatureDisplayTask 에게 실행을 양도한다.
+TemperatureTask와 TemperatureDisplayTask 내부 반복에서는 먼저 다음과 같이 TaskControlFlag에 TemperatureTask 실행될 수 있는 상태로 비트가 설정되어 있는지 판단한다.
+
+```c
+OSFlagPend(TaskControlFlag, 0x04, OS_FLAG_WAIT_SET_ALL, 0 ,&err);  // no consume;
+```
+
+TemperatureTask는 온도센서와 **TWI 통신**을 하여 현재의 온도값을 읽어온 뒤, **TempMbox** 라는 메일박스에 온도값을 전달하고, OSTimeDly를 통해 TemperatureDisplayTask 에게 실행을 양도한다.
 
 TemperatureDisplayTask는 반복문 내부에서 **OSMboxAccept()** 함수를 통해 온도값을 전달받는다. **OSMboxPend** 가 아닌 **OSMboxAccept** 를 호출하는 이유는 TemperatureTask가 계속해서 메일박스에 메시지를 전달하지 않아도 되도록 하기 위함이다.
 
@@ -306,4 +500,49 @@ TemperatureDisplayTask는 메일 박스를 통해 전달받은 온도값을 FND�
 
 ## 조명도 출력 모드 구현
 
-조명도 출력 모드는 **LightTask**가 수행한다. LightTask 내부 반복문에서는 먼저 TaskControlFlag에 LightTask가 실행될 수 있는 상태로 비트 설정이 되어 있는지 판단한다(3번째 비트가 설정되어 있어야 한다). 그 다음 **read_adc()**라는 함수를 호출하여 현재 조명에 따른 CdS 센서값을 읽어서 반환한다. 이 값을 **show_adc()**라는 함수에 넘겨주어 조명값에 따라서 LED를 켠다.
+조명도 출력 모드는 **LightTask** 가 수행한다. LightTask 내부 반복문에서는 먼저 TaskControlFlag에 LightTask가 실행될 수 있는 상태로 비트 설정이 되어 있는지 판단한다(3번째 비트가 설정되어 있어야 한다). 그 다음 **read_adc()** 라는 함수를 호출하여 현재 조명에 따른 CdS 센서값을 읽어서 반환한다. 이 값을 **show_adc()** 라는 함수에 넘겨주어 조명값에 따라서 LED를 켠다.
+
+```c
+// 현재 조명값에 따라서 LED를 켜거나 끄는 테스크
+void LightTask(void *data)
+{
+    INT8U err;
+    unsigned short value;
+
+    while(1)
+    {
+        OSFlagPend(TaskControlFlag, 0x08, OS_FLAG_WAIT_SET_ALL, 0 ,&err);  // no consume;
+        value = read_adc();
+        show_adc(value);
+    }
+}
+...
+// 현재 조명에 대한 값을 반환하는 함수
+unsigned short read_adc()
+{
+    unsigned char adc_low, adc_high;
+    unsigned short value;
+
+    ADCSRA |= 0x40;     // start conversion
+    while((ADCSRA & 0x10) != 0x10);
+
+    adc_low = ADCL;
+    adc_high = ADCH;
+    value = (adc_high << 8) | adc_low;
+
+    return value;
+}
+
+// 주어진 조명값에 따라서 LED를 켜는 함수
+void show_adc(unsigned short value)
+{
+    if(value < CDS_1LUX)
+        PORTA = 0xff;
+    else if (value < CDS_10LUX)
+        PORTA = 0xaa;
+    else if ( value < CDS_100LUX)
+        PORTA = 0x42;
+    else
+        PORTA = 0x00;
+}
+```
